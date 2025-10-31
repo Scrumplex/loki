@@ -222,6 +222,12 @@ func forEachNotNullRowColValue(numRows int, col arrow.Array, f func(rowIdx int))
 }
 
 func (b *streamsResultBuilder) Build(s stats.Result, md *metadata.Context) logqlmodel.Result {
+	for i := range b.data {
+		sort.Slice(b.data[i].Entries, func(a, c int) bool {
+			return b.data[i].Entries[a].Timestamp.After(b.data[i].Entries[c].Timestamp)
+		})
+	}
+
 	sort.Sort(b.data)
 	return logqlmodel.Result{
 		Data:       b.data,

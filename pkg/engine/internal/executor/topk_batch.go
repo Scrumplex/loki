@@ -192,6 +192,33 @@ func (b *topkBatch) findRecordArray(rec arrow.Record, mapper *arrowagg.Mapper, f
 	return rec.Column(columnIndex)
 }
 
+// iterContiguousRanges iterates over contiguous ranges of row indices from a sorted
+// slice. rows must be sorted in ascending order.
+//
+// For example, if rows is [1, 2, 3, 5, 6, 7], it will yield two ranges:
+// [1, 4) and [5, 8), representing the contiguous sequences.
+//
+// The function calls yield for each contiguous range found. If yield returns false,
+// iteration stops.
+func iterContiguousRanges(rows []int, yield func(start, end int) bool) {
+	if len(rows) == 0 {
+		return
+	}
+
+	startRow := rows[0]
+	for i := 1; i < len(rows); i++ {
+		// If current row is not contiguous with previous, yield the previous range
+		if rows[i] != rows[i-1]+1 {
+			if !yield(startRow, rows[i-1]+1) {
+				return
+			}
+			startRow = rows[i]
+		}
+	}
+	// Yield the final contiguous range
+	yield(startRow, rows[len(rows)-1]+1)
+}
+
 // Size returns the current number of rows in the top K (<= K) and the number
 // of unused rows that are retained from records (<= MaxUnused).
 func (b *topkBatch) Size() (rows int, unused int) {
@@ -230,9 +257,18 @@ func (b *topkBatch) Compact() arrow.Record {
 	rowRefs := b.heap.PopAll()
 	slices.Reverse(rowRefs)
 
-	compactor := arrowagg.NewRecords(memory.DefaultAllocator)
+	recordRefs := make(map[arrow.Record][]int, len(b.usedCount))
 	for _, ref := range rowRefs {
-		compactor.AppendSlice(ref.Record, int64(ref.Row), int64(ref.Row)+1)
+		recordRefs[ref.Record] = append(recordRefs[ref.Record], ref.Row)
+	}
+
+	compactor := arrowagg.NewRecords(memory.DefaultAllocator)
+	for rec, rows := range recordRefs {
+		slices.Sort(rows)
+		iterContiguousRanges(rows, func(start, end int) bool {
+			compactor.AppendSlice(rec, int64(start), int64(end))
+			return true
+		})
 	}
 
 	compacted, err := compactor.Aggregate()
